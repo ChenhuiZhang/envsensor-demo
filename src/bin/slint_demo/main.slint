@@ -1,0 +1,119 @@
+import { ComboBox, Button, ScrollView } from "std-widgets.slint";
+
+
+component LogConsole inherits Rectangle {
+    callback log(string);
+    in-out property <string> log_content: "System ready.\n";
+
+    height: 120px;
+    background: #1e1e1e;
+    border-width: 1px;
+    border-color: #555;
+    clip: true;
+
+    sv := ScrollView {
+        width: 100%;
+        height: 100%;
+        viewport-height: txt.preferred-height;
+
+        txt := Text {
+            x: 8px;
+            y: 4px;
+            width: parent.width - 16px;
+            text: root.log_content;
+            color: #00ff00;
+            font-family: "monospace";
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+    }
+
+    log(msg) => {
+        root.log_content += msg + "\n";
+
+        sv.viewport-y = min(0, sv.height - txt.preferred-height);
+    }
+}
+
+export component AppWindow inherits Window {
+    in-out property <string> log-content <=> console.log_content;
+
+    callback log(string);   // declare a callback at AppWindow level
+
+    width: 800px;
+    height: 600px;
+
+    VerticalLayout {
+        padding-top: 8px;
+
+        HorizontalLayout {
+            spacing: 10px;
+
+            HorizontalLayout {
+                padding-left: 8px;
+                alignment: center;
+
+                Text {
+                    y: 5px;
+                    text: "Sensor ";
+                }
+
+                ComboBox {
+                    width: 150px;
+                    height: 24px;
+                    model: ["Temperature", "Humidity", "Pressure"];
+                }
+            }
+
+            HorizontalLayout {
+                alignment: center;
+
+                Text {
+                    y: 5px;
+                    text: "Port ";
+                }
+
+                ComboBox {
+                    width: 150px;
+                    height: 24px;
+                    model: ["/dev/ttyUSB0", "/dev/ttyUSB1", "COM3"];
+                }
+            }
+
+            Button {
+                width: 80px;
+                height: 24px;
+                text: "Start";
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+        }
+
+        Rectangle {
+            width: 40px;
+            height: 5px;
+        }
+
+        // Chart placeholder
+        Rectangle {
+            vertical-stretch: 1;
+            background: #f0f0f0;
+            border-width: 1px;
+            border-color: #cccccc;
+            Text {
+                text: "Line Chart (placeholder)";
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // Status bar
+        console := LogConsole { }
+    }
+
+    log(msg) => {
+        console.log(msg);
+    }
+}
