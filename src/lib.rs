@@ -1,14 +1,7 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod sensor;
+mod tb600b_c;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+pub fn serial_port_list() -> Vec<String> {
+    let ports = serialport::available_ports().unwrap_or_default();
+    ports.into_iter().map(|p| p.port_name).collect()
 }

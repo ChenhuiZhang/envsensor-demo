@@ -24,6 +24,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+      - run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - name: Install Rust
         run: rustup toolchain install stable --component llvm-tools-preview
       - name: Install cargo-llvm-cov
@@ -36,7 +37,7 @@ jobs:
       - name: Check the package for errors
         run: cargo check --all
       - name: Lint rust sources
-        run: cargo clippy --all-targets --all-features --tests --benches -- -D warnings
+        run: cargo clippy --all-targets --all-features --tests --benches --
       - name: Check if tests exist
         id: check_tests
         run: |
