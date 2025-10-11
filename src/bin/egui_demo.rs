@@ -1,15 +1,16 @@
 use egui::ComboBox;
 use egui_plot::{Line, Plot, PlotPoints};
-use rand::Rng;
 use std::time::{Duration, Instant};
 
-use envsensor_demo::{sensor::SensorModel, serial_port_list};
+use envsensor_demo::{
+    sensor::{Sensor, SensorModel},
+    serial_port_list,
+};
 
 struct App {
     data: Vec<(f64, f64)>,
     start_time: Instant,
-    running: bool,
-    last_update: Instant,
+    running: Option<Sensor>,
     sensor_choice: usize,
     sensors: &'static [SensorModel],
     port_choice: usize,
@@ -20,8 +21,7 @@ fn main() -> eframe::Result<()> {
     let app = App {
         data: Vec::new(),
         start_time: Instant::now(),
-        running: false,
-        last_update: Instant::now(),
+        running: None,
         sensor_choice: 0,
         sensors: SensorModel::all(),
         port_choice: 0,
@@ -88,25 +88,35 @@ impl eframe::App for App {
                             });
 
                         // Start button
-                        if ui.button("Start").clicked() {
-                            self.running = true;
-                            self.start_time = Instant::now();
-                            self.data.clear(); // reset
+                        if ui
+                            .button(match self.running {
+                                Some(_) => "Stop",
+                                None => "Start",
+                            })
+                            .clicked()
+                        {
+                            match &self.running {
+                                Some(s) => {
+                                    s.stop_sample_thread();
+
+                                    self.running = None;
+                                }
+                                None => {
+                                    let s = Sensor::new(
+                                        &self.sensors[self.sensor_choice],
+                                        &self.ports[self.port_choice],
+                                    )
+                                    .unwrap();
+
+                                    if let Ok(_) = s.start_sample_thread() {
+                                        self.running = Some(s);
+                                    }
+                                }
+                            }
                         }
                     });
                 });
         });
-
-        // If running, update data every 1 second
-        if self.running && self.last_update.elapsed() >= Duration::from_secs(1) {
-            let elapsed = self.start_time.elapsed().as_secs_f64();
-            let y = rand::rng().random_range(0.0..100.0);
-            self.data.push((elapsed, y));
-            if self.data.len() > 100 {
-                self.data.remove(0);
-            }
-            self.last_update = Instant::now();
-        }
 
         // Chart in central panel
         egui::CentralPanel::default().show(ctx, |ui| {

@@ -3,7 +3,7 @@ use anyhow::Result;
 use binrw::BinRead;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serialport::SerialPort;
-use std::io::Cursor;
+use std::{io::Cursor, thread, time::Duration};
 
 #[derive(BinRead)]
 #[brw(big, magic = b"\xFF\x86")]
@@ -50,7 +50,7 @@ impl From<ECType> for SensorType {
     }
 }
 
-struct TB600BC {
+pub struct TB600BC {
     dev: Box<dyn SerialPort>,
     sensor_type: SensorType,
     scale: u32,
@@ -75,16 +75,21 @@ fn simple_query(
 }
 
 impl TB600BC {
-    fn new(port: &str) -> Result<Self> {
+    pub fn new(port: &str) -> Result<Self> {
         let builder = serialport::new(port, 9600)
             .stop_bits(serialport::StopBits::One)
-            .data_bits(serialport::DataBits::Eight);
+            .data_bits(serialport::DataBits::Eight)
+            .timeout(Duration::from_secs(5));
         println!("{:?}", &builder);
 
         let mut port = builder.open().unwrap_or_else(|e| {
             eprintln!("Failed to open \"{}\". Error: {}", port, e);
             ::std::process::exit(1);
         });
+
+        port.write_all(&[0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46])?;
+
+        thread::sleep(Duration::from_secs(1));
 
         let mut buffer = simple_query(&mut port, &[0xD7], 9)?;
 
@@ -100,6 +105,31 @@ impl TB600BC {
             sensor_type,
             scale,
         })
+    }
+
+    pub fn switch_mode(&mut self, auto: bool) -> Result<()> {
+        if auto {
+            self.dev
+                .write_all(&[0xFF, 0x01, 0x78, 0x40, 0x00, 0x00, 0x00, 0x00, 0x47])?;
+        } else {
+            self.dev
+                .write_all(&[0xFF, 0x01, 0x78, 0x41, 0x00, 0x00, 0x00, 0x00, 0x46])?;
+        }
+
+        Ok(())
+    }
+
+    pub fn read_auto_report_data(&mut self) -> Result<(f32, f32)> {
+        //let mut buf: Vec<u8> = vec![0; 9];
+        let mut buf = [0; 9];
+        self.dev.read_exact(&mut buf)?;
+
+        let data = AutoReport::read(&mut Cursor::new(&buf))?;
+
+        let c1 = data.concentration1 as f32 / self.scale as f32;
+        let c2 = data.concentration2 as f32 / self.scale as f32;
+
+        Ok((c1, c2))
     }
 }
 #[cfg(test)]
