@@ -1,6 +1,6 @@
 use egui::ComboBox;
 use egui_plot::{Line, Plot, PlotPoints};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use envsensor_demo::{
     sensor::{Sensor, SensorModel},
@@ -9,7 +9,6 @@ use envsensor_demo::{
 
 struct App {
     data: Vec<(f64, f64)>,
-    start_time: Instant,
     running: Option<Sensor>,
     sensor_choice: usize,
     sensors: &'static [SensorModel],
@@ -20,7 +19,6 @@ struct App {
 fn main() -> eframe::Result<()> {
     let app = App {
         data: Vec::new(),
-        start_time: Instant::now(),
         running: None,
         sensor_choice: 0,
         sensors: SensorModel::all(),
@@ -61,31 +59,33 @@ impl eframe::App for App {
 
                     ui.horizontal(|ui| {
                         // Dropdown
-                        ui.label("Sensor");
-                        ComboBox::from_id_salt("sensor_dropdown")
-                            .selected_text(self.sensors[self.sensor_choice].as_ref())
-                            .show_ui(ui, |ui| {
-                                for (idx, sensor) in self.sensors.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut self.sensor_choice,
-                                        idx,
-                                        sensor.as_ref(),
-                                    );
-                                }
-                            });
+                        ui.add_enabled_ui(self.running.is_none(), |ui| {
+                            ui.label("Sensor");
+                            ComboBox::from_id_salt("sensor_dropdown")
+                                .selected_text(self.sensors[self.sensor_choice].as_ref())
+                                .show_ui(ui, |ui| {
+                                    for (idx, sensor) in self.sensors.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.sensor_choice,
+                                            idx,
+                                            sensor.as_ref(),
+                                        );
+                                    }
+                                });
 
-                        ui.label("Port");
-                        ComboBox::from_id_salt("port_dropdown")
-                            .selected_text(
-                                self.ports
-                                    .get(self.port_choice)
-                                    .unwrap_or(&"No available port".to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (idx, port) in self.ports.iter().enumerate() {
-                                    ui.selectable_value(&mut self.port_choice, idx, port);
-                                }
-                            });
+                            ui.label("Port");
+                            ComboBox::from_id_salt("port_dropdown")
+                                .selected_text(
+                                    self.ports
+                                        .get(self.port_choice)
+                                        .unwrap_or(&"No available port".to_string()),
+                                )
+                                .show_ui(ui, |ui| {
+                                    for (idx, port) in self.ports.iter().enumerate() {
+                                        ui.selectable_value(&mut self.port_choice, idx, port);
+                                    }
+                                });
+                        });
 
                         // Start button
                         if ui
@@ -97,7 +97,7 @@ impl eframe::App for App {
                         {
                             match &self.running {
                                 Some(s) => {
-                                    s.stop_sample_thread();
+                                    s.stop();
 
                                     self.running = None;
                                 }
@@ -108,7 +108,7 @@ impl eframe::App for App {
                                     )
                                     .unwrap();
 
-                                    if let Ok(_) = s.start_sample_thread() {
+                                    if s.start().is_ok() {
                                         self.running = Some(s);
                                     }
                                 }
