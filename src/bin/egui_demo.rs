@@ -11,7 +11,7 @@ struct App {
     data: Vec<(f64, f64)>,
     running: Option<Sensor>,
     sensor_choice: usize,
-    sensors: &'static [SensorModel],
+    sensors: Vec<SensorModel>,
     port_choice: usize,
     ports: Vec<String>,
 }
