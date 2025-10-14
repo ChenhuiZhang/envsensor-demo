@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::time::Duration;
 use std::{
     fs::File,
     sync::{
@@ -14,6 +15,7 @@ use chrono::DateTime;
 use chrono::Local;
 use strum::AsRefStr;
 
+use crate::rydason::Rydason;
 use crate::tb600b_c::TB600BC;
 
 #[derive(Clone, Copy, Debug)]
@@ -25,11 +27,12 @@ pub enum SensorType {
 #[derive(AsRefStr, Clone, Copy)]
 pub enum SensorModel {
     EC_TB600BC,
+    RYDASON,
 }
 
 impl SensorModel {
     pub fn all() -> &'static [SensorModel] {
-        &[SensorModel::EC_TB600BC]
+        &[SensorModel::EC_TB600BC, SensorModel::RYDASON]
     }
 }
 
@@ -78,12 +81,18 @@ impl Sensor {
         match self.hw {
             SensorModel::EC_TB600BC => {
                 thread::spawn(move || -> Result<()> {
-                    let mut sensor = TB600BC::new(&port)?;
+                    let mut sensor = TB600BC::new(&port).map_err(|e| {
+                        eprintln!("Failed to create TB600BC sensor: {e}");
+                        e
+                    })?;
 
                     sensor.switch_mode(true)?;
 
                     while !flag.load(Ordering::SeqCst) {
-                        let (c1, c2) = sensor.read_auto_report_data()?;
+                        let (c1, c2) = sensor.read_auto_report_data().map_err(|e| {
+                            eprintln!("Failed to read auto report data: {e}");
+                            e
+                        })?;
 
                         let now = chrono::Local::now();
                         let v = vec![
@@ -108,6 +117,34 @@ impl Sensor {
                     Ok(())
                 });
             }
+            SensorModel::RYDASON => {
+                thread::spawn(move || -> Result<()> {
+                    let mut sensor = Rydason::new(&port, 1).map_err(|e| {
+                        eprintln!("Failed to create Rydason sensor: {e}");
+                        e
+                    })?;
+
+                    while !flag.load(Ordering::SeqCst) {
+                        let now = chrono::Local::now();
+                        let v = vec![SensorData {
+                            ty: SensorType::CO,
+                            value: sensor.read_measured_value().map_err(|e| {
+                                eprintln!("Failed to read measured value: {e}");
+                                e
+                            })?,
+                            unit: "ppm",
+                        }];
+
+                        bus.broadcast(SampleData {
+                            timestamp: now,
+                            data: v,
+                        });
+
+                        thread::sleep(Duration::from_secs(1));
+                    }
+                    Ok(())
+                });
+            }
         }
 
         let flag = self.flag.clone();
@@ -122,20 +159,30 @@ impl Sensor {
 
             let mut csv = File::create(filename)?;
             // Write CSV header
-            writeln!(csv, "timestamp,CO(ppm),CO(mg/m3)")?;
+            match device {
+                SensorModel::EC_TB600BC => {
+                    writeln!(csv, "Timestamp,CO(ppm),CO(mg/m3)")?;
+                }
+                SensorModel::RYDASON => {
+                    writeln!(csv, "Timestamp,CO(ppm)")?;
+                }
+            }
 
             while !flag.load(Ordering::SeqCst) {
                 if let Ok(sample) = rx.recv() {
                     println!("Got {sample:?}");
-                    let c1 = sample.data.get(0).unwrap().value;
-                    let c2 = sample.data.get(1).unwrap().value;
                     writeln!(
                         csv,
-                        "{},{},{}",
-                        sample.timestamp.format("%Y-%m-%d-%H-%M-%S"),
-                        c1,
-                        c2
+                        "{},{}",
+                        sample.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                        sample
+                            .data
+                            .iter()
+                            .map(|d| d.value.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
                     )?;
+
                     csv.flush()?;
                 }
             }

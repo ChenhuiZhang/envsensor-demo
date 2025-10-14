@@ -1,9 +1,10 @@
-use crate::sensor::SensorType;
 use anyhow::Result;
 use binrw::BinRead;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serialport::SerialPort;
 use std::{io::Cursor, thread, time::Duration};
+
+use crate::sensor::SensorType;
 
 #[derive(BinRead)]
 #[brw(big, magic = b"\xFF\x86")]
