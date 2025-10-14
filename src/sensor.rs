@@ -13,7 +13,8 @@ use anyhow::Result;
 use bus::Bus;
 use chrono::DateTime;
 use chrono::Local;
-use strum::AsRefStr;
+use strum::{AsRefStr, IntoEnumIterator};
+use strum_macros::EnumIter;
 
 use crate::rydason::Rydason;
 use crate::tb600b_c::TB600BC;
@@ -24,15 +25,15 @@ pub enum SensorType {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(AsRefStr, Clone, Copy)]
+#[derive(AsRefStr, Clone, Copy, EnumIter)]
 pub enum SensorModel {
     EC_TB600BC,
     RYDASON,
 }
 
 impl SensorModel {
-    pub fn all() -> &'static [SensorModel] {
-        &[SensorModel::EC_TB600BC, SensorModel::RYDASON]
+    pub fn all() -> Vec<SensorModel> {
+        SensorModel::iter().collect()
     }
 }
 

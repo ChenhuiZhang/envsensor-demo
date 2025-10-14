@@ -16,6 +16,7 @@ num_enum = "0.7.4"
 serialport = "4.7.3"
 slint = "1.13.1"
 strum = "0.27.2"
+strum_macros = "0.27.2"
 
 [build-dependencies]
 slint-build = "1.13.1"
