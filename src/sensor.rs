@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::Result;
-use bus::Bus;
+use bus::{Bus, BusReader};
 use chrono::DateTime;
 use chrono::Local;
 use strum::{AsRefStr, IntoEnumIterator};
@@ -37,18 +37,14 @@ impl SensorModel {
     }
 }
 
-/*
-enum SensorHW {
-    EC_TB600BC(TB600BC),
-}
-
-*/
 pub struct Sensor {
     hw: SensorModel,
     port: String,
     flag: Arc<AtomicBool>,
+    rx: BusReader<AppMsg>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct SensorData {
     ty: SensorType,
@@ -62,36 +58,53 @@ pub struct SampleData {
     data: Vec<SensorData>,
 }
 
+#[derive(Clone)]
+pub enum AppMsg {
+    Status(String),
+    Sample(SampleData),
+}
+
 impl Sensor {
-    pub fn new(model: &SensorModel, port: &str) -> Result<Self> {
+    pub fn new(model: &SensorModel, port: &str, rx: BusReader<AppMsg>) -> Result<Self> {
         Ok(Sensor {
             hw: *model,
             port: port.to_string(),
             flag: Arc::new(AtomicBool::new(false)),
+            rx,
         })
     }
 
-    pub fn start(&self) -> Result<()> {
+    pub fn start(&self, mut bus: Bus<AppMsg>) -> Result<()> {
         let port = self.port.clone();
         self.flag.store(false, Ordering::SeqCst);
         let flag = self.flag.clone();
 
-        let mut bus = Bus::new(10);
         let mut rx = bus.add_rx();
 
         match self.hw {
             SensorModel::EC_TB600BC => {
                 thread::spawn(move || -> Result<()> {
-                    let mut sensor = TB600BC::new(&port).map_err(|e| {
-                        eprintln!("Failed to create TB600BC sensor: {e}");
-                        e
+                    let mut sensor = TB600BC::new(&port).inspect_err(|e| {
+                        bus.broadcast(AppMsg::Status(format!(
+                            "Failed to create TB600BC sensor: {e}"
+                        )));
                     })?;
 
-                    sensor.switch_mode(true)?;
+                    bus.broadcast(AppMsg::Status("TB600BC init".to_string()));
+
+                    sensor.switch_mode(true).inspect_err(|e| {
+                        bus.broadcast(AppMsg::Status(format!(
+                            "Failed to switch to auto report mode: {e}"
+                        )));
+                    })?;
+
+                    bus.broadcast(AppMsg::Status("TB600BC switch to auto report".to_string()));
 
                     while !flag.load(Ordering::SeqCst) {
                         let (c1, c2) = sensor.read_auto_report_data().map_err(|e| {
-                            eprintln!("Failed to read auto report data: {e}");
+                            bus.broadcast(AppMsg::Status(format!(
+                                "Failed to read auto report data: {e}"
+                            )));
                             e
                         })?;
 
@@ -109,10 +122,10 @@ impl Sensor {
                             },
                         ];
 
-                        bus.broadcast(SampleData {
+                        bus.broadcast(AppMsg::Sample(SampleData {
                             timestamp: now,
                             data: v,
-                        });
+                        }));
                     }
 
                     Ok(())
@@ -120,10 +133,14 @@ impl Sensor {
             }
             SensorModel::RYDASON => {
                 thread::spawn(move || -> Result<()> {
-                    let mut sensor = Rydason::new(&port, 1).map_err(|e| {
+                    let mut sensor = Rydason::new(&port, 1).inspect_err(|e| {
                         eprintln!("Failed to create Rydason sensor: {e}");
-                        e
+                        bus.broadcast(AppMsg::Status(format!(
+                            "Failed to create Rydason sensor: {e}"
+                        )));
                     })?;
+
+                    bus.broadcast(AppMsg::Status("Rydason init".to_string()));
 
                     while !flag.load(Ordering::SeqCst) {
                         let now = chrono::Local::now();
@@ -136,10 +153,10 @@ impl Sensor {
                             unit: "ppm",
                         }];
 
-                        bus.broadcast(SampleData {
+                        bus.broadcast(AppMsg::Sample(SampleData {
                             timestamp: now,
                             data: v,
-                        });
+                        }));
 
                         thread::sleep(Duration::from_secs(1));
                     }
@@ -170,8 +187,7 @@ impl Sensor {
             }
 
             while !flag.load(Ordering::SeqCst) {
-                if let Ok(sample) = rx.recv() {
-                    println!("Got {sample:?}");
+                if let Ok(AppMsg::Sample(sample)) = rx.recv() {
                     writeln!(
                         csv,
                         "{},{}",
@@ -196,5 +212,13 @@ impl Sensor {
 
     pub fn stop(&self) {
         self.flag.store(true, Ordering::SeqCst);
+    }
+
+    pub fn try_recv(&mut self) -> Option<AppMsg> {
+        if let Ok(s) = self.rx.try_recv() {
+            return Some(s);
+        }
+
+        None
     }
 }

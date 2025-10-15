@@ -1,8 +1,9 @@
+use std::{io::Cursor, thread, time::Duration};
+
 use anyhow::Result;
 use binrw::BinRead;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serialport::SerialPort;
-use std::{io::Cursor, thread, time::Duration};
 
 use crate::sensor::SensorType;
 

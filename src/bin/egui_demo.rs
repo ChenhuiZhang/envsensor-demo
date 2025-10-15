@@ -1,9 +1,11 @@
-use egui::ComboBox;
-use egui_plot::{Line, Plot, PlotPoints};
 use std::time::Duration;
 
+use bus::Bus;
+use egui::{CentralPanel, Color32, ComboBox, Frame, Margin, RichText, TopBottomPanel};
+use egui_plot::{Line, Plot, PlotPoints};
+
 use envsensor_demo::{
-    sensor::{Sensor, SensorModel},
+    sensor::{AppMsg, Sensor, SensorModel},
     serial_port_list,
 };
 
@@ -14,6 +16,7 @@ struct App {
     sensors: Vec<SensorModel>,
     port_choice: usize,
     ports: Vec<String>,
+    status: String,
 }
 
 fn main() -> eframe::Result<()> {
@@ -24,6 +27,7 @@ fn main() -> eframe::Result<()> {
         sensors: SensorModel::all(),
         port_choice: 0,
         ports: serial_port_list(),
+        status: String::from("Ready"),
     };
 
     let options = eframe::NativeOptions::default();
@@ -33,9 +37,9 @@ fn main() -> eframe::Result<()> {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Top control panel
-        egui::TopBottomPanel::top("controls").show(ctx, |ui| {
-            egui::Frame::default()
-                .inner_margin(egui::Margin {
+        TopBottomPanel::top("controls").show(ctx, |ui| {
+            Frame::default()
+                .inner_margin(Margin {
                     left: 2,
                     right: 2,
                     top: 2,
@@ -102,13 +106,17 @@ impl eframe::App for App {
                                     self.running = None;
                                 }
                                 None => {
+                                    let mut bus = Bus::new(10);
+
+                                    let rx = bus.add_rx();
                                     let s = Sensor::new(
                                         &self.sensors[self.sensor_choice],
                                         &self.ports[self.port_choice],
+                                        rx,
                                     )
                                     .unwrap();
 
-                                    if s.start().is_ok() {
+                                    if s.start(bus).is_ok() {
                                         self.running = Some(s);
                                     }
                                 }
@@ -118,23 +126,37 @@ impl eframe::App for App {
                 });
         });
 
+        if let Some(s) = &mut self.running
+            && let Some(msg) = s.try_recv()
+        {
+            match msg {
+                AppMsg::Status(s) => self.status = s,
+                AppMsg::Sample(sample) => println!("New: {sample:?}"),
+            }
+        }
+
         // Chart in central panel
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::Frame::default()
-                .inner_margin(egui::Margin {
+        CentralPanel::default().show(ctx, |ui| {
+            Frame::default()
+                .inner_margin(Margin {
                     left: 2,
                     right: 2,
                     top: 2,
-                    bottom: 2,
-                }) // top, bottom margins
+                    bottom: 2 + 20, /* for status bar */
+                })
                 .show(ui, |ui| {
                     let points: PlotPoints = self.data.iter().map(|&(x, y)| [x, y]).collect();
-                    Plot::new("random_line_chart")
-                        .view_aspect(2.0)
-                        .show(ui, |plot_ui| {
-                            plot_ui.line(Line::new("", points));
-                        });
+                    Plot::new("random_line_chart").show(ui, |plot_ui| {
+                        plot_ui.line(Line::new("", points));
+                    });
                 });
+        });
+
+        // Status bar at the bottom
+        TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.label(RichText::new(&self.status).color(Color32::WHITE));
+            });
         });
 
         // request redraw

@@ -26,7 +26,7 @@ impl From<RydasonType> for SensorType {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+#[derive(Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 enum RydasonUnit {
     PPB = 1,
@@ -79,9 +79,9 @@ impl Value {
     }
 }
 
+#[allow(dead_code)]
 #[derive(BinRead)]
 #[brw(big)]
-#[derive(Debug)]
 struct QueryRsp {
     addr: u8,
     func: u8,
@@ -160,14 +160,13 @@ impl Rydason {
             .timeout(Duration::from_secs(5));
         println!("{:?}", &builder);
 
-        let mut port = builder.open().unwrap_or_else(|e| {
+        let mut port = builder.open().inspect_err(|e| {
             eprintln!("Failed to open \"{}\". Error: {}", port, e);
-            ::std::process::exit(1);
-        });
+        })?;
 
         let sensor_type = read_type(&mut port, addr)?;
 
-        //let sensor_unit = read_unit(&mut port, addr)?;
+        let sensor_unit = read_unit(&mut port, addr)?;
 
         let scale = read_scale(&mut port, addr)?;
 
