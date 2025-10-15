@@ -2,6 +2,8 @@
 name = "envsensor-demo"
 version = "0.1.0"
 edition = "2024"
+description = "An application for fetching and visualizing data from environment sensors."
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.100"
