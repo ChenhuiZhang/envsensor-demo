@@ -170,7 +170,13 @@ impl eframe::App for App {
         // Status bar at the bottom
         TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.label(RichText::new(&self.status).color(Color32::WHITE));
+                ui.label(
+                    RichText::new(&self.status).color(if ctx.style().visuals.dark_mode {
+                        Color32::WHITE
+                    } else {
+                        Color32::BLACK
+                    }),
+                );
             });
         });
 
