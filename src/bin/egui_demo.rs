@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use bus::Bus;
-use egui::{CentralPanel, Color32, ComboBox, Frame, Margin, RichText, TopBottomPanel};
+use egui::{CentralPanel, Color32, ComboBox, Frame, IconData, Margin, RichText, TopBottomPanel};
 use egui_plot::{Line, Plot, PlotPoints};
 
 use envsensor_demo::{
@@ -30,7 +31,21 @@ fn main() -> eframe::Result<()> {
         status: String::from("Ready"),
     };
 
-    let options = eframe::NativeOptions::default();
+    let icon_data = include_bytes!("../../asset/icon.png");
+    let rgba = image::load_from_memory_with_format(icon_data, image::ImageFormat::Png)
+        .unwrap()
+        .into_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_icon(Arc::new(IconData {
+            rgba: rgba.into_raw(),
+            width: w,
+            height: h,
+        })),
+        ..Default::default()
+    };
+
     eframe::run_native("EnvSensor Demo", options, Box::new(|_| Ok(Box::new(app))))
 }
 

@@ -26,6 +26,7 @@ impl From<RydasonType> for SensorType {
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u16)]
 enum RydasonUnit {
