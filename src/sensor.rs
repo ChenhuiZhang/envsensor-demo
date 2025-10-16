@@ -19,9 +19,10 @@ use strum_macros::EnumIter;
 use crate::rydason::Rydason;
 use crate::tb600b_c::TB600BC;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, AsRefStr, EnumIter)]
 pub enum SensorType {
     CO,
+    NO2,
 }
 
 #[allow(non_camel_case_types)]
@@ -64,6 +65,57 @@ pub enum AppMsg {
     Sample(SampleData),
 }
 
+fn start_log(
+    device: SensorModel,
+    flag: Arc<AtomicBool>,
+    mut rx: BusReader<AppMsg>,
+    sensor_type: &[SensorType],
+    sensor_unit: &[&'static str],
+) {
+    let csv_head = format!(
+        "{},{}",
+        "Timestamp",
+        sensor_type
+            .iter()
+            .zip(sensor_unit.iter())
+            .map(|(t, u)| format!("{}({})", t.as_ref(), u))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    thread::spawn(move || -> Result<()> {
+        let filename = format!(
+            "{}_{}.csv",
+            chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"),
+            device.as_ref()
+        );
+
+        let mut csv = File::create(filename)?;
+        // Write CSV header
+        writeln!(csv, "{csv_head}")?;
+
+        while !flag.load(Ordering::SeqCst) {
+            if let Ok(AppMsg::Sample(sample)) = rx.recv() {
+                writeln!(
+                    csv,
+                    "{},{}",
+                    sample.timestamp.format("%m/%d/%Y %H:%M:%S"),
+                    sample
+                        .data
+                        .iter()
+                        .map(|d| d.value.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )?;
+
+                csv.flush()?;
+            }
+        }
+
+        Ok(())
+    });
+}
+
 impl Sensor {
     pub fn new(model: &SensorModel, port: &str, rx: BusReader<AppMsg>) -> Result<Self> {
         Ok(Sensor {
@@ -79,7 +131,7 @@ impl Sensor {
         self.flag.store(false, Ordering::SeqCst);
         let flag = self.flag.clone();
 
-        let mut rx = bus.add_rx();
+        let device = self.hw;
 
         match self.hw {
             SensorModel::EC_TB600BC => {
@@ -100,6 +152,12 @@ impl Sensor {
 
                     bus.broadcast(AppMsg::Status("TB600BC switch to auto report".to_string()));
 
+                    let sensor_type = sensor.get_sensor_type();
+                    let sensor_unit = sensor.get_sensor_unit();
+
+                    let f = flag.clone();
+                    start_log(device, f, bus.add_rx(), &sensor_type, &sensor_unit);
+
                     while !flag.load(Ordering::SeqCst) {
                         let (c1, c2) = sensor.read_auto_report_data().map_err(|e| {
                             bus.broadcast(AppMsg::Status(format!(
@@ -111,14 +169,14 @@ impl Sensor {
                         let now = chrono::Local::now();
                         let v = vec![
                             SensorData {
-                                ty: SensorType::CO,
+                                ty: sensor_type[0],
                                 value: c1,
-                                unit: "ppm",
+                                unit: sensor_unit[0],
                             },
                             SensorData {
-                                ty: SensorType::CO,
+                                ty: sensor_type[1],
                                 value: c2,
-                                unit: "mg/m3",
+                                unit: sensor_unit[1],
                             },
                         ];
 
@@ -142,15 +200,21 @@ impl Sensor {
 
                     bus.broadcast(AppMsg::Status("Rydason init".to_string()));
 
+                    let sensor_type = sensor.get_sensor_type();
+                    let sensor_unit = sensor.get_sensor_unit();
+
+                    let f = flag.clone();
+                    start_log(device, f, bus.add_rx(), &sensor_type, &sensor_unit);
+
                     while !flag.load(Ordering::SeqCst) {
                         let now = chrono::Local::now();
                         let v = vec![SensorData {
-                            ty: SensorType::CO,
+                            ty: sensor_type[0],
                             value: sensor.read_measured_value().map_err(|e| {
                                 eprintln!("Failed to read measured value: {e}");
                                 e
                             })?,
-                            unit: "ppm",
+                            unit: sensor_unit[0],
                         }];
 
                         bus.broadcast(AppMsg::Sample(SampleData {
@@ -164,48 +228,6 @@ impl Sensor {
                 });
             }
         }
-
-        let flag = self.flag.clone();
-        let device = self.hw;
-
-        thread::spawn(move || -> Result<()> {
-            let filename = format!(
-                "{}_{}.csv",
-                chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"),
-                device.as_ref()
-            );
-
-            let mut csv = File::create(filename)?;
-            // Write CSV header
-            match device {
-                SensorModel::EC_TB600BC => {
-                    writeln!(csv, "Timestamp,CO(ppm),CO(mg/m3)")?;
-                }
-                SensorModel::RYDASON => {
-                    writeln!(csv, "Timestamp,CO(ppm)")?;
-                }
-            }
-
-            while !flag.load(Ordering::SeqCst) {
-                if let Ok(AppMsg::Sample(sample)) = rx.recv() {
-                    writeln!(
-                        csv,
-                        "{},{}",
-                        sample.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                        sample
-                            .data
-                            .iter()
-                            .map(|d| d.value.to_string())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    )?;
-
-                    csv.flush()?;
-                }
-            }
-
-            Ok(())
-        });
 
         Ok(())
     }

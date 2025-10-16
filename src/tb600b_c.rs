@@ -7,6 +7,7 @@ use serialport::SerialPort;
 
 use crate::sensor::SensorType;
 
+#[allow(dead_code)]
 #[derive(BinRead)]
 #[brw(big, magic = b"\xFF\x86")]
 struct AutoReport {
@@ -16,6 +17,7 @@ struct AutoReport {
     checksum: u8,
 }
 
+#[allow(dead_code)]
 #[derive(BinRead)]
 #[brw(big)]
 struct QueryParam1 {
@@ -27,6 +29,7 @@ struct QueryParam1 {
     checksum: u8,
 }
 
+#[allow(dead_code)]
 #[derive(BinRead)]
 #[brw(big, magic = b"\xFF\xD7")]
 struct QueryParam2 {
@@ -42,12 +45,22 @@ struct QueryParam2 {
 #[repr(u8)]
 enum ECType {
     CO = 0x19,
+    NO2 = 0x21,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
+#[repr(u8)]
+enum ECUnit {
+    PpmMg = 0x02,
+    Ppbug = 0x04,
+    Vol10g = 0x08,
 }
 
 impl From<ECType> for SensorType {
     fn from(value: ECType) -> Self {
         match value {
             ECType::CO => SensorType::CO,
+            ECType::NO2 => SensorType::NO2,
         }
     }
 }
@@ -55,6 +68,7 @@ impl From<ECType> for SensorType {
 pub struct TB600BC {
     dev: Box<dyn SerialPort>,
     sensor_type: SensorType,
+    sensor_unit: ECUnit,
     scale: u32,
 }
 
@@ -99,12 +113,15 @@ impl TB600BC {
 
         let sensor_type = SensorType::from(ECType::try_from(param.ty)?);
 
+        let sensor_unit = ECUnit::try_from(param.unit)?;
+
         // 0x30 >> 4 = 0x3 => 10^3
         let scale = 10_u32.pow((param.scale >> 4) as u32);
 
         Ok(TB600BC {
             dev: port,
             sensor_type,
+            sensor_unit,
             scale,
         })
     }
@@ -119,6 +136,18 @@ impl TB600BC {
         }
 
         Ok(())
+    }
+
+    pub fn get_sensor_type(&self) -> Vec<SensorType> {
+        vec![self.sensor_type, self.sensor_type]
+    }
+
+    pub fn get_sensor_unit(&self) -> Vec<&'static str> {
+        match self.sensor_unit {
+            ECUnit::PpmMg => vec!["ppm", "mg/m3"],
+            ECUnit::Ppbug => vec!["ppb", "ug/m3"],
+            ECUnit::Vol10g => vec!["%vol", "10g/m3"],
+        }
     }
 
     pub fn read_auto_report_data(&mut self) -> Result<(f32, f32)> {
