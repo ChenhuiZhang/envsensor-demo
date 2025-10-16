@@ -16,12 +16,14 @@ const CRC_16_MODBUS: Crc<u16> = Crc::<u16>::new(&crc::CRC_16_MODBUS);
 #[repr(u16)]
 enum RydasonType {
     CO = 1,
+    NO2 = 5,
 }
 
 impl From<RydasonType> for SensorType {
     fn from(value: RydasonType) -> Self {
         match value {
             RydasonType::CO => SensorType::CO,
+            RydasonType::NO2 => SensorType::NO2,
         }
     }
 }
@@ -97,6 +99,7 @@ pub struct Rydason {
     dev: Box<dyn SerialPort>,
     addr: u8,
     sensor_type: SensorType,
+    sensor_unit: RydasonUnit,
     scale: u32,
 }
 
@@ -175,8 +178,20 @@ impl Rydason {
             dev: port,
             addr,
             sensor_type,
+            sensor_unit,
             scale,
         })
+    }
+
+    pub fn get_sensor_type(&self) -> Vec<SensorType> {
+        vec![self.sensor_type]
+    }
+
+    pub fn get_sensor_unit(&self) -> Vec<&'static str> {
+        match self.sensor_unit {
+            RydasonUnit::PPB => vec!["ppb"],
+            RydasonUnit::PPM => vec!["ppm"],
+        }
     }
 
     pub fn read_measured_value(&mut self) -> Result<f32> {
