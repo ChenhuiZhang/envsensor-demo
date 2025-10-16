@@ -39,9 +39,9 @@ impl SensorModel {
 }
 
 pub struct Sensor {
-    hw: SensorModel,
+    model: SensorModel,
     port: String,
-    flag: Arc<AtomicBool>,
+    stop_flag: Arc<AtomicBool>,
     rx: BusReader<AppMsg>,
 }
 
@@ -65,8 +65,8 @@ pub enum AppMsg {
     Sample(SampleData),
 }
 
-fn start_log(
-    device: SensorModel,
+fn spawn_log_thread(
+    model: SensorModel,
     flag: Arc<AtomicBool>,
     mut rx: BusReader<AppMsg>,
     sensor_type: &[SensorType],
@@ -87,7 +87,7 @@ fn start_log(
         let filename = format!(
             "{}_{}.csv",
             chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"),
-            device.as_ref()
+            model.as_ref()
         );
 
         let mut csv = File::create(filename)?;
@@ -116,124 +116,147 @@ fn start_log(
     });
 }
 
+fn spawn_tb600bc_thread(
+    port: String,
+    mut bus: Bus<AppMsg>,
+    model: SensorModel,
+    flag: Arc<AtomicBool>,
+) {
+    thread::spawn(move || -> Result<()> {
+        let mut sensor = TB600BC::new(&port).inspect_err(|e| {
+            bus.broadcast(AppMsg::Status(format!(
+                "Failed to create TB600BC sensor: {e}"
+            )));
+        })?;
+
+        bus.broadcast(AppMsg::Status("TB600BC init".to_string()));
+
+        sensor.switch_mode(true).inspect_err(|e| {
+            bus.broadcast(AppMsg::Status(format!(
+                "Failed to switch to auto report mode: {e}"
+            )));
+        })?;
+
+        bus.broadcast(AppMsg::Status("TB600BC switch to auto report".to_string()));
+
+        let sensor_type = sensor.get_sensor_type();
+        let sensor_unit = sensor.get_sensor_unit();
+
+        spawn_log_thread(
+            model,
+            flag.clone(),
+            bus.add_rx(),
+            &sensor_type,
+            &sensor_unit,
+        );
+
+        while !flag.load(Ordering::SeqCst) {
+            let (c1, c2) = sensor.read_auto_report_data().map_err(|e| {
+                bus.broadcast(AppMsg::Status(format!(
+                    "Failed to read auto report data: {e}"
+                )));
+                e
+            })?;
+
+            let now = chrono::Local::now();
+            let v = vec![
+                SensorData {
+                    ty: sensor_type[0],
+                    value: c1,
+                    unit: sensor_unit[0],
+                },
+                SensorData {
+                    ty: sensor_type[1],
+                    value: c2,
+                    unit: sensor_unit[1],
+                },
+            ];
+
+            bus.broadcast(AppMsg::Sample(SampleData {
+                timestamp: now,
+                data: v,
+            }));
+        }
+
+        Ok(())
+    });
+}
+
+fn spawn_rydason_thread(
+    port: String,
+    mut bus: Bus<AppMsg>,
+    model: SensorModel,
+    flag: Arc<AtomicBool>,
+) {
+    thread::spawn(move || -> Result<()> {
+        let mut sensor = Rydason::new(&port, 1).inspect_err(|e| {
+            eprintln!("Failed to create Rydason sensor: {e}");
+            bus.broadcast(AppMsg::Status(format!(
+                "Failed to create Rydason sensor: {e}"
+            )));
+        })?;
+
+        bus.broadcast(AppMsg::Status("Rydason init".to_string()));
+
+        let sensor_type = sensor.get_sensor_type();
+        let sensor_unit = sensor.get_sensor_unit();
+
+        spawn_log_thread(
+            model,
+            flag.clone(),
+            bus.add_rx(),
+            &sensor_type,
+            &sensor_unit,
+        );
+
+        while !flag.load(Ordering::SeqCst) {
+            let now = chrono::Local::now();
+            let v = vec![SensorData {
+                ty: sensor_type[0],
+                value: sensor.read_measured_value().map_err(|e| {
+                    eprintln!("Failed to read measured value: {e}");
+                    e
+                })?,
+                unit: sensor_unit[0],
+            }];
+
+            bus.broadcast(AppMsg::Sample(SampleData {
+                timestamp: now,
+                data: v,
+            }));
+
+            thread::sleep(Duration::from_secs(1));
+        }
+
+        Ok(())
+    });
+}
+
 impl Sensor {
     pub fn new(model: &SensorModel, port: &str, rx: BusReader<AppMsg>) -> Result<Self> {
         Ok(Sensor {
-            hw: *model,
+            model: *model,
             port: port.to_string(),
-            flag: Arc::new(AtomicBool::new(false)),
+            stop_flag: Arc::new(AtomicBool::new(false)),
             rx,
         })
     }
 
-    pub fn start(&self, mut bus: Bus<AppMsg>) -> Result<()> {
+    pub fn start(&self, bus: Bus<AppMsg>) -> Result<()> {
         let port = self.port.clone();
-        self.flag.store(false, Ordering::SeqCst);
-        let flag = self.flag.clone();
+        let flag = self.stop_flag.clone();
+        let model = self.model;
 
-        let device = self.hw;
-
-        match self.hw {
-            SensorModel::EC_TB600BC => {
-                thread::spawn(move || -> Result<()> {
-                    let mut sensor = TB600BC::new(&port).inspect_err(|e| {
-                        bus.broadcast(AppMsg::Status(format!(
-                            "Failed to create TB600BC sensor: {e}"
-                        )));
-                    })?;
-
-                    bus.broadcast(AppMsg::Status("TB600BC init".to_string()));
-
-                    sensor.switch_mode(true).inspect_err(|e| {
-                        bus.broadcast(AppMsg::Status(format!(
-                            "Failed to switch to auto report mode: {e}"
-                        )));
-                    })?;
-
-                    bus.broadcast(AppMsg::Status("TB600BC switch to auto report".to_string()));
-
-                    let sensor_type = sensor.get_sensor_type();
-                    let sensor_unit = sensor.get_sensor_unit();
-
-                    let f = flag.clone();
-                    start_log(device, f, bus.add_rx(), &sensor_type, &sensor_unit);
-
-                    while !flag.load(Ordering::SeqCst) {
-                        let (c1, c2) = sensor.read_auto_report_data().map_err(|e| {
-                            bus.broadcast(AppMsg::Status(format!(
-                                "Failed to read auto report data: {e}"
-                            )));
-                            e
-                        })?;
-
-                        let now = chrono::Local::now();
-                        let v = vec![
-                            SensorData {
-                                ty: sensor_type[0],
-                                value: c1,
-                                unit: sensor_unit[0],
-                            },
-                            SensorData {
-                                ty: sensor_type[1],
-                                value: c2,
-                                unit: sensor_unit[1],
-                            },
-                        ];
-
-                        bus.broadcast(AppMsg::Sample(SampleData {
-                            timestamp: now,
-                            data: v,
-                        }));
-                    }
-
-                    Ok(())
-                });
-            }
-            SensorModel::RYDASON => {
-                thread::spawn(move || -> Result<()> {
-                    let mut sensor = Rydason::new(&port, 1).inspect_err(|e| {
-                        eprintln!("Failed to create Rydason sensor: {e}");
-                        bus.broadcast(AppMsg::Status(format!(
-                            "Failed to create Rydason sensor: {e}"
-                        )));
-                    })?;
-
-                    bus.broadcast(AppMsg::Status("Rydason init".to_string()));
-
-                    let sensor_type = sensor.get_sensor_type();
-                    let sensor_unit = sensor.get_sensor_unit();
-
-                    let f = flag.clone();
-                    start_log(device, f, bus.add_rx(), &sensor_type, &sensor_unit);
-
-                    while !flag.load(Ordering::SeqCst) {
-                        let now = chrono::Local::now();
-                        let v = vec![SensorData {
-                            ty: sensor_type[0],
-                            value: sensor.read_measured_value().map_err(|e| {
-                                eprintln!("Failed to read measured value: {e}");
-                                e
-                            })?,
-                            unit: sensor_unit[0],
-                        }];
-
-                        bus.broadcast(AppMsg::Sample(SampleData {
-                            timestamp: now,
-                            data: v,
-                        }));
-
-                        thread::sleep(Duration::from_secs(1));
-                    }
-                    Ok(())
-                });
-            }
+        match self.model {
+            SensorModel::EC_TB600BC => spawn_tb600bc_thread(port, bus, model, flag),
+            SensorModel::RYDASON => spawn_rydason_thread(port, bus, model, flag),
         }
 
         Ok(())
     }
 
     pub fn stop(&self) {
-        self.flag.store(true, Ordering::SeqCst);
+        self.stop_flag.store(true, Ordering::SeqCst);
     }
 
     pub fn try_recv(&mut self) -> Option<AppMsg> {
