@@ -1,3 +1,4 @@
+mod nextpm;
 mod rydason;
 pub mod sensor;
 mod tb600b_c;

@@ -16,6 +16,7 @@ use chrono::Local;
 use strum::{AsRefStr, IntoEnumIterator};
 use strum_macros::EnumIter;
 
+use crate::nextpm::NextPM;
 use crate::rydason::Rydason;
 use crate::tb600b_c::TB600BC;
 
@@ -23,6 +24,9 @@ use crate::tb600b_c::TB600BC;
 pub enum SensorType {
     CO,
     NO2,
+    PM1,
+    PM2_5,
+    PM10,
 }
 
 #[allow(non_camel_case_types)]
@@ -30,6 +34,7 @@ pub enum SensorType {
 pub enum SensorModel {
     EC_TB600BC,
     RYDASON,
+    TERA_NextPM,
 }
 
 impl SensorModel {
@@ -232,6 +237,67 @@ fn spawn_rydason_thread(
     });
 }
 
+fn spawn_nextpm_thread(
+    port: String,
+    mut bus: Bus<AppMsg>,
+    model: SensorModel,
+    flag: Arc<AtomicBool>,
+) {
+    thread::spawn(move || -> Result<()> {
+        let mut sensor = NextPM::new(&port).inspect_err(|e| {
+            eprintln!("Failed to create NextPM sensor: {e}");
+            bus.broadcast(AppMsg::Status(format!(
+                "Failed to create NextPM sensor: {e}"
+            )));
+        })?;
+
+        bus.broadcast(AppMsg::Status("TERA_NextPM init".to_string()));
+
+        spawn_log_thread(
+            model,
+            flag.clone(),
+            bus.add_rx(),
+            &[SensorType::PM1, SensorType::PM2_5, SensorType::PM10],
+            &["ug/m3", "ug/m3", "ug/m3"],
+        );
+
+        while !flag.load(Ordering::SeqCst) {
+            let now = chrono::Local::now();
+            let value = sensor.read_measured_value().map_err(|e| {
+                eprintln!("Failed to read measured value: {e}");
+                e
+            })?;
+
+            let v = vec![
+                SensorData {
+                    ty: SensorType::PM1,
+                    value: value.0,
+                    unit: "ug/m3",
+                },
+                SensorData {
+                    ty: SensorType::PM2_5,
+                    value: value.1,
+                    unit: "ug/m3",
+                },
+                SensorData {
+                    ty: SensorType::PM10,
+                    value: value.2,
+                    unit: "ug/m3",
+                },
+            ];
+
+            bus.broadcast(AppMsg::Sample(SampleData {
+                timestamp: now,
+                data: v,
+            }));
+
+            thread::sleep(Duration::from_secs(1));
+        }
+
+        Ok(())
+    });
+}
+
 impl Sensor {
     pub fn new(model: &SensorModel, port: &str, rx: BusReader<AppMsg>) -> Result<Self> {
         Ok(Sensor {
@@ -250,6 +316,7 @@ impl Sensor {
         match self.model {
             SensorModel::EC_TB600BC => spawn_tb600bc_thread(port, bus, model, flag),
             SensorModel::RYDASON => spawn_rydason_thread(port, bus, model, flag),
+            SensorModel::TERA_NextPM => spawn_nextpm_thread(port, bus, model, flag),
         }
 
         Ok(())
