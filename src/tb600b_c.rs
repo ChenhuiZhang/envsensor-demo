@@ -5,7 +5,7 @@ use binrw::BinRead;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serialport::SerialPort;
 
-use crate::sensor::SensorType;
+use crate::sensor::{SensorChannel, SensorData, SensorDriver, SensorModel, SensorType, Unit};
 
 #[allow(dead_code)]
 #[derive(BinRead)]
@@ -67,9 +67,8 @@ impl From<ECType> for SensorType {
 
 pub struct TB600BC {
     dev: Box<dyn SerialPort>,
-    sensor_type: SensorType,
-    sensor_unit: ECUnit,
     scale: u32,
+    channels: Vec<SensorChannel>,
 }
 
 fn simple_query(
@@ -118,11 +117,22 @@ impl TB600BC {
         // 0x30 >> 4 = 0x3 => 10^3
         let scale = 10_u32.pow((param.scale >> 4) as u32);
 
+        // Build channel metadata
+        let units = match sensor_unit {
+            ECUnit::PpmMg => [Unit::PPM, Unit::MgPerM3],
+            ECUnit::Ppbug => [Unit::PPB, Unit::UgPerM3],
+            ECUnit::Vol10g => [Unit::PercentVol, Unit::TenGPerM3],
+        };
+
+        let channels = vec![
+            SensorChannel::new(sensor_type, units[0]),
+            SensorChannel::new(sensor_type, units[1]),
+        ];
+
         Ok(TB600BC {
             dev: port,
-            sensor_type,
-            sensor_unit,
             scale,
+            channels,
         })
     }
 
@@ -138,18 +148,6 @@ impl TB600BC {
         Ok(())
     }
 
-    pub fn get_sensor_type(&self) -> Vec<SensorType> {
-        vec![self.sensor_type, self.sensor_type]
-    }
-
-    pub fn get_sensor_unit(&self) -> Vec<&'static str> {
-        match self.sensor_unit {
-            ECUnit::PpmMg => vec!["ppm", "mg/m3"],
-            ECUnit::Ppbug => vec!["ppb", "ug/m3"],
-            ECUnit::Vol10g => vec!["%vol", "10g/m3"],
-        }
-    }
-
     pub fn read_auto_report_data(&mut self) -> Result<(f32, f32)> {
         //let mut buf: Vec<u8> = vec![0; 9];
         let mut buf = [0; 9];
@@ -163,6 +161,42 @@ impl TB600BC {
         Ok((c1, c2))
     }
 }
+
+impl SensorDriver for TB600BC {
+    fn new(port: &str) -> Result<Self> {
+        TB600BC::new(port)
+    }
+
+    fn initialize(&mut self) -> Result<()> {
+        self.switch_mode(true)
+    }
+
+    fn get_metadata(&self) -> &[SensorChannel] {
+        &self.channels
+    }
+
+    fn read_data(&mut self) -> Result<Vec<SensorData>> {
+        let (c1, c2) = self.read_auto_report_data()?;
+
+        Ok(vec![
+            SensorData {
+                ty: self.channels[0].sensor_type,
+                value: c1,
+                unit: self.channels[0].unit,
+            },
+            SensorData {
+                ty: self.channels[1].sensor_type,
+                value: c2,
+                unit: self.channels[1].unit,
+            },
+        ])
+    }
+
+    fn model() -> SensorModel {
+        SensorModel::EC_TB600BC
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
