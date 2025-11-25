@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::time::Duration;
 use std::{
     fs::File,
     sync::{
@@ -20,13 +19,65 @@ use crate::nextpm::NextPM;
 use crate::rydason::Rydason;
 use crate::tb600b_c::TB600BC;
 
-#[derive(Clone, Copy, Debug, AsRefStr, EnumIter)]
+/// Metadata for a single sensor channel (type and unit)
+pub struct SensorChannel {
+    pub sensor_type: SensorType,
+    pub unit: Unit,
+}
+
+impl SensorChannel {
+    pub fn new(sensor_type: SensorType, unit: Unit) -> Self {
+        Self { sensor_type, unit }
+    }
+}
+
+/// Trait that all sensor drivers must implement
+pub trait SensorDriver: Send + 'static {
+    /// Create a new sensor instance
+    fn new(port: &str) -> Result<Self>
+    where
+        Self: Sized;
+
+    /// Get sensor metadata (channels with types and units)
+    fn get_metadata(&self) -> &[SensorChannel];
+
+    /// Perform sensor-specific initialization
+    fn initialize(&mut self) -> Result<()> {
+        Ok(()) // Default: no initialization needed
+    }
+
+    /// Read sensor data
+    fn read_data(&mut self) -> Result<Vec<SensorData>>;
+
+    /// Get the sensor model this driver handles
+    fn model() -> SensorModel
+    where
+        Self: Sized;
+}
+
+#[derive(AsRefStr, Clone, Copy, Debug, EnumIter)]
 pub enum SensorType {
     CO,
     NO2,
     PM1,
     PM2_5,
     PM10,
+}
+
+#[derive(Clone, Copy, Debug, AsRefStr)]
+pub enum Unit {
+    #[strum(serialize = "ppm")]
+    PPM,
+    #[strum(serialize = "ppb")]
+    PPB,
+    #[strum(serialize = "mg/m3")]
+    MgPerM3,
+    #[strum(serialize = "µg/m3")]
+    UgPerM3,
+    #[strum(serialize = "%vol")]
+    PercentVol,
+    #[strum(serialize = "10g/m3")]
+    TenGPerM3,
 }
 
 #[allow(non_camel_case_types)]
@@ -53,15 +104,15 @@ pub struct Sensor {
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct SensorData {
-    ty: SensorType,
-    value: f32,
-    unit: &'static str,
+    pub ty: SensorType,
+    pub value: f32,
+    pub unit: Unit,
 }
 
 #[derive(Clone, Debug)]
 pub struct SampleData {
-    timestamp: DateTime<Local>,
-    data: Vec<SensorData>,
+    pub timestamp: DateTime<Local>,
+    pub data: Vec<SensorData>,
 }
 
 #[derive(Clone)]
@@ -70,20 +121,18 @@ pub enum AppMsg {
     Sample(SampleData),
 }
 
-fn spawn_log_thread(
+pub fn spawn_log_thread(
     model: SensorModel,
     flag: Arc<AtomicBool>,
     mut rx: BusReader<AppMsg>,
-    sensor_type: &[SensorType],
-    sensor_unit: &[&'static str],
+    channels: &[SensorChannel],
 ) {
     let csv_head = format!(
         "{},{}",
         "Timestamp",
-        sensor_type
+        channels
             .iter()
-            .zip(sensor_unit.iter())
-            .map(|(t, u)| format!("{}({})", t.as_ref(), u))
+            .map(|ch| format!("{}({})", ch.sensor_type.as_ref(), ch.unit.as_ref()))
             .collect::<Vec<_>>()
             .join(",")
     );
@@ -121,177 +170,44 @@ fn spawn_log_thread(
     });
 }
 
-fn spawn_tb600bc_thread(
+pub fn spawn_sensor_thread<T: SensorDriver>(
     port: String,
     mut bus: Bus<AppMsg>,
-    model: SensorModel,
     flag: Arc<AtomicBool>,
 ) {
     thread::spawn(move || -> Result<()> {
-        let mut sensor = TB600BC::new(&port).inspect_err(|e| {
+        let model = T::model();
+
+        let mut sensor = T::new(&port).inspect_err(|e| {
             bus.broadcast(AppMsg::Status(format!(
-                "Failed to create TB600BC sensor: {e}"
+                "Failed to create {} sensor: {e}",
+                model.as_ref()
             )));
         })?;
 
-        bus.broadcast(AppMsg::Status("TB600BC init".to_string()));
+        bus.broadcast(AppMsg::Status(format!("{} init", model.as_ref())));
 
-        sensor.switch_mode(true).inspect_err(|e| {
+        sensor.initialize().inspect_err(|e| {
             bus.broadcast(AppMsg::Status(format!(
-                "Failed to switch to auto report mode: {e}"
+                "Failed to initialize {}: {e}",
+                model.as_ref()
             )));
         })?;
 
-        bus.broadcast(AppMsg::Status("TB600BC switch to auto report".to_string()));
+        let metadata = sensor.get_metadata();
 
-        let sensor_type = sensor.get_sensor_type();
-        let sensor_unit = sensor.get_sensor_unit();
-
-        spawn_log_thread(
-            model,
-            flag.clone(),
-            bus.add_rx(),
-            &sensor_type,
-            &sensor_unit,
-        );
+        spawn_log_thread(model, flag.clone(), bus.add_rx(), metadata);
 
         while !flag.load(Ordering::SeqCst) {
-            let (c1, c2) = sensor.read_auto_report_data().map_err(|e| {
-                bus.broadcast(AppMsg::Status(format!(
-                    "Failed to read auto report data: {e}"
-                )));
+            let data = sensor.read_data().map_err(|e| {
+                bus.broadcast(AppMsg::Status(format!("Failed to read data: {e}")));
                 e
             })?;
 
-            let now = chrono::Local::now();
-            let v = vec![
-                SensorData {
-                    ty: sensor_type[0],
-                    value: c1,
-                    unit: sensor_unit[0],
-                },
-                SensorData {
-                    ty: sensor_type[1],
-                    value: c2,
-                    unit: sensor_unit[1],
-                },
-            ];
-
             bus.broadcast(AppMsg::Sample(SampleData {
-                timestamp: now,
-                data: v,
+                timestamp: chrono::Local::now(),
+                data,
             }));
-        }
-
-        Ok(())
-    });
-}
-
-fn spawn_rydason_thread(
-    port: String,
-    mut bus: Bus<AppMsg>,
-    model: SensorModel,
-    flag: Arc<AtomicBool>,
-) {
-    thread::spawn(move || -> Result<()> {
-        let mut sensor = Rydason::new(&port, 1).inspect_err(|e| {
-            eprintln!("Failed to create Rydason sensor: {e}");
-            bus.broadcast(AppMsg::Status(format!(
-                "Failed to create Rydason sensor: {e}"
-            )));
-        })?;
-
-        bus.broadcast(AppMsg::Status("Rydason init".to_string()));
-
-        let sensor_type = sensor.get_sensor_type();
-        let sensor_unit = sensor.get_sensor_unit();
-
-        spawn_log_thread(
-            model,
-            flag.clone(),
-            bus.add_rx(),
-            &sensor_type,
-            &sensor_unit,
-        );
-
-        while !flag.load(Ordering::SeqCst) {
-            let now = chrono::Local::now();
-            let v = vec![SensorData {
-                ty: sensor_type[0],
-                value: sensor.read_measured_value().map_err(|e| {
-                    eprintln!("Failed to read measured value: {e}");
-                    e
-                })?,
-                unit: sensor_unit[0],
-            }];
-
-            bus.broadcast(AppMsg::Sample(SampleData {
-                timestamp: now,
-                data: v,
-            }));
-
-            thread::sleep(Duration::from_secs(1));
-        }
-
-        Ok(())
-    });
-}
-
-fn spawn_nextpm_thread(
-    port: String,
-    mut bus: Bus<AppMsg>,
-    model: SensorModel,
-    flag: Arc<AtomicBool>,
-) {
-    thread::spawn(move || -> Result<()> {
-        let mut sensor = NextPM::new(&port).inspect_err(|e| {
-            eprintln!("Failed to create NextPM sensor: {e}");
-            bus.broadcast(AppMsg::Status(format!(
-                "Failed to create NextPM sensor: {e}"
-            )));
-        })?;
-
-        bus.broadcast(AppMsg::Status("TERA_NextPM init".to_string()));
-
-        spawn_log_thread(
-            model,
-            flag.clone(),
-            bus.add_rx(),
-            &[SensorType::PM1, SensorType::PM2_5, SensorType::PM10],
-            &["ug/m3", "ug/m3", "ug/m3"],
-        );
-
-        while !flag.load(Ordering::SeqCst) {
-            let now = chrono::Local::now();
-            let value = sensor.read_measured_value().map_err(|e| {
-                eprintln!("Failed to read measured value: {e}");
-                e
-            })?;
-
-            let v = vec![
-                SensorData {
-                    ty: SensorType::PM1,
-                    value: value.0,
-                    unit: "ug/m3",
-                },
-                SensorData {
-                    ty: SensorType::PM2_5,
-                    value: value.1,
-                    unit: "ug/m3",
-                },
-                SensorData {
-                    ty: SensorType::PM10,
-                    value: value.2,
-                    unit: "ug/m3",
-                },
-            ];
-
-            bus.broadcast(AppMsg::Sample(SampleData {
-                timestamp: now,
-                data: v,
-            }));
-
-            thread::sleep(Duration::from_secs(1));
         }
 
         Ok(())
@@ -311,12 +227,11 @@ impl Sensor {
     pub fn start(&self, bus: Bus<AppMsg>) -> Result<()> {
         let port = self.port.clone();
         let flag = self.stop_flag.clone();
-        let model = self.model;
 
         match self.model {
-            SensorModel::EC_TB600BC => spawn_tb600bc_thread(port, bus, model, flag),
-            SensorModel::RYDASON => spawn_rydason_thread(port, bus, model, flag),
-            SensorModel::TERA_NextPM => spawn_nextpm_thread(port, bus, model, flag),
+            SensorModel::EC_TB600BC => spawn_sensor_thread::<TB600BC>(port, bus, flag),
+            SensorModel::RYDASON => spawn_sensor_thread::<Rydason>(port, bus, flag),
+            SensorModel::TERA_NextPM => spawn_sensor_thread::<NextPM>(port, bus, flag),
         }
 
         Ok(())

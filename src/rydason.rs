@@ -8,7 +8,7 @@ use crc::Crc;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serialport::SerialPort;
 
-use crate::sensor::SensorType;
+use crate::sensor::{SensorChannel, SensorData, SensorDriver, SensorModel, SensorType, Unit};
 
 const CRC_16_MODBUS: Crc<u16> = Crc::<u16>::new(&crc::CRC_16_MODBUS);
 
@@ -56,7 +56,7 @@ struct QueryReq {
     crc: u16,
 }
 
-#[derive(Debug, BinRead)]
+#[derive(BinRead)]
 #[br(import(len: u8))]
 enum Value {
     #[br(pre_assert(len == 2))]
@@ -98,9 +98,8 @@ struct QueryRsp {
 pub struct Rydason {
     dev: Box<dyn SerialPort>,
     addr: u8,
-    sensor_type: SensorType,
-    sensor_unit: RydasonUnit,
     scale: u32,
+    channels: Vec<SensorChannel>,
 }
 
 fn query(port: &mut Box<dyn SerialPort>, req: &QueryReq, len: usize) -> Result<QueryRsp> {
@@ -174,24 +173,20 @@ impl Rydason {
 
         let scale = read_scale(&mut port, addr)?;
 
+        // Build channel metadata
+        let unit = match sensor_unit {
+            RydasonUnit::PPB => Unit::PPB,
+            RydasonUnit::PPM => Unit::PPM,
+        };
+
+        let channels = vec![SensorChannel::new(sensor_type, unit)];
+
         Ok(Rydason {
             dev: port,
             addr,
-            sensor_type,
-            sensor_unit,
             scale,
+            channels,
         })
-    }
-
-    pub fn get_sensor_type(&self) -> Vec<SensorType> {
-        vec![self.sensor_type]
-    }
-
-    pub fn get_sensor_unit(&self) -> Vec<&'static str> {
-        match self.sensor_unit {
-            RydasonUnit::PPB => vec!["ppb"],
-            RydasonUnit::PPM => vec!["ppm"],
-        }
     }
 
     pub fn read_measured_value(&mut self) -> Result<f32> {
@@ -205,5 +200,32 @@ impl Rydason {
         let rsp = query(&mut self.dev, &req, 9)?;
 
         Ok(rsp.value.as_u32()? as f32 / self.scale as f32)
+    }
+}
+
+impl SensorDriver for Rydason {
+    fn new(port: &str) -> Result<Self> {
+        Rydason::new(port, 1) // Default address: 1
+    }
+
+    fn get_metadata(&self) -> &[SensorChannel] {
+        &self.channels
+    }
+
+    fn read_data(&mut self) -> Result<Vec<SensorData>> {
+        let value = self.read_measured_value()?;
+
+        // Rydason needs polling delay
+        std::thread::sleep(std::time::Duration::from_secs(1));
+
+        Ok(vec![SensorData {
+            ty: self.channels[0].sensor_type,
+            value,
+            unit: self.channels[0].unit,
+        }])
+    }
+
+    fn model() -> SensorModel {
+        SensorModel::RYDASON
     }
 }
